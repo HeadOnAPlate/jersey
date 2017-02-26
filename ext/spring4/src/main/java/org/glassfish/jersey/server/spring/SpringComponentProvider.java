@@ -45,16 +45,15 @@ import java.util.logging.Logger;
 
 import javax.servlet.ServletContext;
 
-import org.glassfish.jersey.internal.inject.Injections;
-import org.glassfish.jersey.server.ApplicationHandler;
-import org.glassfish.jersey.server.spi.ComponentProvider;
-
 import org.glassfish.hk2.api.DynamicConfiguration;
 import org.glassfish.hk2.api.Factory;
 import org.glassfish.hk2.api.ServiceLocator;
 import org.glassfish.hk2.utilities.ServiceLocatorUtilities;
 import org.glassfish.hk2.utilities.binding.ServiceBindingBuilder;
-
+import org.glassfish.jersey.internal.inject.Injections;
+import org.glassfish.jersey.server.ApplicationHandler;
+import org.glassfish.jersey.server.spi.ComponentProvider;
+import org.glassfish.jersey.server.spring.util.ProfileUtils;
 import org.jvnet.hk2.spring.bridge.api.SpringBridge;
 import org.jvnet.hk2.spring.bridge.api.SpringIntoHK2Bridge;
 import org.springframework.aop.framework.Advised;
@@ -73,138 +72,151 @@ import org.springframework.web.context.support.WebApplicationContextUtils;
  */
 public class SpringComponentProvider implements ComponentProvider {
 
-    private static final Logger LOGGER = Logger.getLogger(SpringComponentProvider.class.getName());
-    private static final String DEFAULT_CONTEXT_CONFIG_LOCATION = "applicationContext.xml";
-    private static final String PARAM_CONTEXT_CONFIG_LOCATION = "contextConfigLocation";
-    private static final String PARAM_SPRING_CONTEXT = "contextConfig";
+	private static final Logger LOGGER = Logger.getLogger(SpringComponentProvider.class.getName());
+	private static final String DEFAULT_CONTEXT_CONFIG_LOCATION = "applicationContext.xml";
+	private static final String PARAM_CONTEXT_CONFIG_LOCATION = "contextConfigLocation";
+	private static final String PARAM_SPRING_CONTEXT = "contextConfig";
 
-    private volatile ServiceLocator locator;
-    private volatile ApplicationContext ctx;
+	private volatile ServiceLocator locator;
+	private volatile ApplicationContext ctx;
 
-    @Override
-    public void initialize(ServiceLocator locator) {
-        this.locator = locator;
+	@Override
+	public void initialize(ServiceLocator locator) {
+		this.locator = locator;
 
-        if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine(LocalizationMessages.CTX_LOOKUP_STARTED());
-        }
+		if (LOGGER.isLoggable(Level.FINE)) {
+			LOGGER.fine(LocalizationMessages.CTX_LOOKUP_STARTED());
+		}
 
-        ServletContext sc = locator.getService(ServletContext.class);
+		ServletContext sc = locator.getService(ServletContext.class);
 
-        if (sc != null) {
-            // servlet container
-            ctx = WebApplicationContextUtils.getWebApplicationContext(sc);
-        } else {
-            // non-servlet container
-            ctx = createSpringContext();
-        }
-        if (ctx == null) {
-            LOGGER.severe(LocalizationMessages.CTX_LOOKUP_FAILED());
-            return;
-        }
-        LOGGER.config(LocalizationMessages.CTX_LOOKUP_SUCESSFUL());
+		if (sc != null) {
+			// servlet container
+			ctx = WebApplicationContextUtils.getWebApplicationContext(sc);
+		} else {
+			// non-servlet container
+			ctx = createSpringContext();
+		}
+		if (ctx == null) {
+			LOGGER.severe(LocalizationMessages.CTX_LOOKUP_FAILED());
+			return;
+		}
+		LOGGER.config(LocalizationMessages.CTX_LOOKUP_SUCESSFUL());
 
-        // initialize HK2 spring-bridge
-        SpringBridge.getSpringBridge().initializeSpringBridge(locator);
-        SpringIntoHK2Bridge springBridge = locator.getService(SpringIntoHK2Bridge.class);
-        springBridge.bridgeSpringBeanFactory(ctx);
+		// initialize HK2 spring-bridge
+		SpringBridge.getSpringBridge().initializeSpringBridge(locator);
+		SpringIntoHK2Bridge springBridge = locator.getService(SpringIntoHK2Bridge.class);
+		springBridge.bridgeSpringBeanFactory(ctx);
 
-        // register Spring @Autowired annotation handler with HK2 ServiceLocator
-        ServiceLocatorUtilities.addOneConstant(locator, new AutowiredInjectResolver(ctx));
-        ServiceLocatorUtilities.addOneConstant(locator, ctx, "SpringContext", ApplicationContext.class);
-        LOGGER.config(LocalizationMessages.SPRING_COMPONENT_PROVIDER_INITIALIZED());
-    }
+		// register Spring @Autowired annotation handler with HK2 ServiceLocator
+		ServiceLocatorUtilities.addOneConstant(locator, new AutowiredInjectResolver(ctx));
+		ServiceLocatorUtilities.addOneConstant(locator, ctx, "SpringContext", ApplicationContext.class);
+		LOGGER.config(LocalizationMessages.SPRING_COMPONENT_PROVIDER_INITIALIZED());
+	}
 
-    // detect JAX-RS classes that are also Spring @Components.
-    // register these with HK2 ServiceLocator to manage their lifecycle using Spring.
-    @Override
-    public boolean bind(Class<?> component, Set<Class<?>> providerContracts) {
+	// detect JAX-RS classes that are also Spring @Components.
+	// register these with HK2 ServiceLocator to manage their lifecycle using Spring.
+	@Override
+	public boolean bind(Class<?> component, Set<Class<?>> providerContracts) {
 
-        if (ctx == null) {
-            return false;
-        }
+		if (ctx == null) {
+			return false;
+		}
 
-        if (AnnotationUtils.findAnnotation(component, Component.class) != null) {
-            DynamicConfiguration c = Injections.getConfiguration(locator);
-            String[] beanNames = ctx.getBeanNamesForType(component);
-            if (beanNames == null || beanNames.length != 1) {
-                LOGGER.severe(LocalizationMessages.NONE_OR_MULTIPLE_BEANS_AVAILABLE(component));
-                return false;
-            }
-            String beanName = beanNames[0];
+		if (AnnotationUtils.findAnnotation(component, Component.class) != null) {
+			DynamicConfiguration c = Injections.getConfiguration(locator);
+			String[] beanNames = ctx.getBeanNamesForType(component);
+			if (beanNames == null || beanNames.length != 1) {
 
-            ServiceBindingBuilder bb = Injections
-                    .newFactoryBinder(new SpringComponentProvider.SpringManagedBeanFactory(ctx, locator, beanName));
-            bb.to(component);
-            if (providerContracts != null) {
-                for (Class<?> providerContract : providerContracts) {
-                    bb.to(providerContract);
-                }
-            }
-            Injections.addBinding(bb, c);
-            c.commit();
+				// check if bean was filtered due to @Profile annotation
+				// log debug level about it if yes and return true to pretend we registered a binding (should filter?)
+				if (ProfileUtils.isComponentAcceptable(ctx.getEnvironment(), component)) {
+					LOGGER.fine(LocalizationMessages.BEAN_FILTERED_BY_PROFILE(component));
+					return true;
+				}
 
-            LOGGER.config(LocalizationMessages.BEAN_REGISTERED(beanName));
-            return true;
-        }
-        return false;
-    }
+				// method level profile filtering needs to go somewhere else?
 
-    @Override
-    public void done() {
-    }
 
-    private ApplicationContext createSpringContext() {
-        ApplicationHandler applicationHandler = locator.getService(ApplicationHandler.class);
-        ApplicationContext springContext = (ApplicationContext) applicationHandler.getConfiguration()
-                .getProperty(PARAM_SPRING_CONTEXT);
-        if (springContext == null) {
-            String contextConfigLocation = (String) applicationHandler.getConfiguration()
-                    .getProperty(PARAM_CONTEXT_CONFIG_LOCATION);
-            springContext = createXmlSpringConfiguration(contextConfigLocation);
-        }
-        return springContext;
-    }
+				LOGGER.severe(LocalizationMessages.NONE_OR_MULTIPLE_BEANS_AVAILABLE(component));
+				return false;
+			}
+			String beanName = beanNames[0];
 
-    private ApplicationContext createXmlSpringConfiguration(String contextConfigLocation) {
-        if (contextConfigLocation == null) {
-            contextConfigLocation = DEFAULT_CONTEXT_CONFIG_LOCATION;
-        }
-        return ctx = new ClassPathXmlApplicationContext(contextConfigLocation, "jersey-spring-applicationContext.xml");
-    }
+			ServiceBindingBuilder bb = Injections
+					.newFactoryBinder(new SpringComponentProvider.SpringManagedBeanFactory(ctx, locator, beanName));
+			bb.to(component);
+			if (providerContracts != null) {
+				for (Class<?> providerContract : providerContracts) {
+					bb.to(providerContract);
+				}
+			}
 
-    private static class SpringManagedBeanFactory implements Factory {
 
-        private final ApplicationContext ctx;
-        private final ServiceLocator locator;
-        private final String beanName;
+			Injections.addBinding(bb, c);
+			c.commit();
 
-        private SpringManagedBeanFactory(ApplicationContext ctx, ServiceLocator locator, String beanName) {
-            this.ctx = ctx;
-            this.locator = locator;
-            this.beanName = beanName;
-        }
+			LOGGER.config(LocalizationMessages.BEAN_REGISTERED(beanName));
+			return true;
+		}
+		return false;
+	}
 
-        @Override
-        public Object provide() {
-            Object bean = ctx.getBean(beanName);
-            if (bean instanceof Advised) {
-                try {
-                    // Unwrap the bean and inject the values inside of it
-                    Object localBean = ((Advised) bean).getTargetSource().getTarget();
-                    locator.inject(localBean);
-                } catch (Exception e) {
-                    // Ignore and let the injection happen as it normally would.
-                    locator.inject(bean);
-                }
-            } else {
-                locator.inject(bean);
-            }
-            return bean;
-        }
+	@Override
+	public void done() {
+	}
 
-        @Override
-        public void dispose(Object instance) {
-        }
-    }
+	private ApplicationContext createSpringContext() {
+		ApplicationHandler applicationHandler = locator.getService(ApplicationHandler.class);
+		ApplicationContext springContext = (ApplicationContext) applicationHandler.getConfiguration()
+				.getProperty(PARAM_SPRING_CONTEXT);
+		if (springContext == null) {
+			String contextConfigLocation = (String) applicationHandler.getConfiguration()
+					.getProperty(PARAM_CONTEXT_CONFIG_LOCATION);
+			springContext = createXmlSpringConfiguration(contextConfigLocation);
+		}
+		return springContext;
+	}
+
+	private ApplicationContext createXmlSpringConfiguration(String contextConfigLocation) {
+		if (contextConfigLocation == null) {
+			contextConfigLocation = DEFAULT_CONTEXT_CONFIG_LOCATION;
+		}
+		return ctx = new ClassPathXmlApplicationContext(contextConfigLocation, "jersey-spring-applicationContext.xml");
+	}
+
+	private static class SpringManagedBeanFactory implements Factory {
+
+		private final ApplicationContext ctx;
+		private final ServiceLocator locator;
+		private final String beanName;
+
+		private SpringManagedBeanFactory(ApplicationContext ctx, ServiceLocator locator, String beanName) {
+			this.ctx = ctx;
+			this.locator = locator;
+			this.beanName = beanName;
+		}
+
+		@Override
+		public Object provide() {
+			Object bean = ctx.getBean(beanName);
+			if (bean instanceof Advised) {
+				try {
+					// Unwrap the bean and inject the values inside of it
+					Object localBean = ((Advised) bean).getTargetSource().getTarget();
+					locator.inject(localBean);
+				} catch (Exception e) {
+					// Ignore and let the injection happen as it normally would.
+					locator.inject(bean);
+				}
+			} else {
+				locator.inject(bean);
+			}
+			return bean;
+		}
+
+		@Override
+		public void dispose(Object instance) {
+		}
+	}
 }
